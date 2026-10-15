@@ -469,6 +469,22 @@ bool MVKShaderModule::convert(SPIRVToMSLConversionConfiguration* pShaderConfig,
 	return wasConverted;
 }
 
+bool MVKShaderModule::getTessExecutionModes(spv::ExecutionModel model, const char* entryName,
+										  SPIRVTessExecutionModes& modes, string& errorLog) {
+	lock_guard<mutex> lock(_accessLock);
+	for (const auto& cached : _tessExecutionModes) {
+		if (cached.model == model && cached.entryName == entryName) {
+			modes = cached.modes;
+			return true;
+		}
+	}
+	SPIRVTessExecutionModes reflected;
+	if ( !mvk::getTessExecutionModes(getSPIRV(), model, entryName, reflected, errorLog) ) { return false; }
+	_tessExecutionModes.push_back({model, entryName, reflected});
+	modes = std::move(reflected);
+	return true;
+}
+
 void MVKShaderModule::setWorkgroupSize(uint32_t x, uint32_t y, uint32_t z) {
 	if(_directMSLLibrary) { _directMSLLibrary->setWorkgroupSize(x, y, z); }
 }

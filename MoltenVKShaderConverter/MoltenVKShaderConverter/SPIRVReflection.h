@@ -53,6 +53,12 @@ namespace mvk {
 		uint32_t numControlPoints = 0;
 	};
 
+	/** Low execution-mode flags used by tessellation; outputVertices requires OutputVertices. */
+	struct SPIRVTessExecutionModes {
+		SPIRV_CROSS_NAMESPACE::Bitset modes;
+		uint32_t outputVertices = 0;
+	};
+
 #pragma mark -
 #pragma mark SPIRVShaderInterfaceVariable
 
@@ -95,100 +101,96 @@ namespace mvk {
 #pragma mark -
 #pragma mark Functions
 
-	/**
-	 * Given a tessellation control shader and a tessellation evaluation shader,
-	 * both in SPIR-V format, returns tessellation reflection data.
-	 */
+	/** Returns the literal tessellation modes of one entry point, leaving modes unchanged on failure. */
 	template<typename Vs>
-	static inline bool getTessReflectionData(const Vs& tesc, const std::string& tescEntryName,
-											 const Vs& tese, const std::string& teseEntryName,
-											 SPIRVTessReflectionData& reflectData, std::string& errorLog) {
+	static inline bool getTessExecutionModes(const Vs& spirv, spv::ExecutionModel model,
+										   const std::string& entryName, SPIRVTessExecutionModes& modes,
+										   std::string& errorLog) {
 #ifndef SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
 		try {
 #endif
-			SPIRV_CROSS_NAMESPACE::CompilerReflection tescReflect(tesc);
-			SPIRV_CROSS_NAMESPACE::CompilerReflection teseReflect(tese);
-
-			if (!tescEntryName.empty()) {
-				tescReflect.set_entry_point(tescEntryName, spv::ExecutionModelTessellationControl);
+			SPIRV_CROSS_NAMESPACE::Compiler reflect(spirv);
+			if (!entryName.empty()) { reflect.set_entry_point(entryName, model); }
+			SPIRVTessExecutionModes reflected;
+			reflected.modes = SPIRV_CROSS_NAMESPACE::Bitset(reflect.get_execution_mode_bitset().get_lower());
+			if (reflected.modes.get(spv::ExecutionModeOutputVertices)) {
+				reflected.outputVertices = reflect.get_execution_mode_argument(spv::ExecutionModeOutputVertices);
 			}
-			if (!teseEntryName.empty()) {
-				teseReflect.set_entry_point(teseEntryName, spv::ExecutionModelTessellationEvaluation);
-			}
-
-			tescReflect.compile();
-			teseReflect.compile();
-
-			const SPIRV_CROSS_NAMESPACE::Bitset& tescModes = tescReflect.get_execution_mode_bitset();
-			const SPIRV_CROSS_NAMESPACE::Bitset& teseModes = teseReflect.get_execution_mode_bitset();
-
-			// Extract the parameters from the shaders.
-			if (tescModes.get(spv::ExecutionModeTriangles)) {
-				reflectData.patchKind = spv::ExecutionModeTriangles;
-			} else if (tescModes.get(spv::ExecutionModeQuads)) {
-				reflectData.patchKind = spv::ExecutionModeQuads;
-			} else if (tescModes.get(spv::ExecutionModeIsolines)) {
-				reflectData.patchKind = spv::ExecutionModeIsolines;
-			} else if (teseModes.get(spv::ExecutionModeTriangles)) {
-				reflectData.patchKind = spv::ExecutionModeTriangles;
-			} else if (teseModes.get(spv::ExecutionModeQuads)) {
-				reflectData.patchKind = spv::ExecutionModeQuads;
-			} else if (teseModes.get(spv::ExecutionModeIsolines)) {
-				reflectData.patchKind = spv::ExecutionModeIsolines;
-			} else {
-				errorLog = "Neither tessellation shader specifies a patch input mode (Triangles, Quads, or Isolines).";
-				return false;
-			}
-
-			if (tescModes.get(spv::ExecutionModeVertexOrderCw)) {
-				reflectData.windingOrder = spv::ExecutionModeVertexOrderCw;
-			} else if (tescModes.get(spv::ExecutionModeVertexOrderCcw)) {
-				reflectData.windingOrder = spv::ExecutionModeVertexOrderCcw;
-			} else if (teseModes.get(spv::ExecutionModeVertexOrderCw)) {
-				reflectData.windingOrder = spv::ExecutionModeVertexOrderCw;
-			} else if (teseModes.get(spv::ExecutionModeVertexOrderCcw)) {
-				reflectData.windingOrder = spv::ExecutionModeVertexOrderCcw;
-			} else {
-				errorLog = "Neither tessellation shader specifies a winding order mode (VertexOrderCw or VertexOrderCcw).";
-				return false;
-			}
-
-			reflectData.pointMode = tescModes.get(spv::ExecutionModePointMode) || teseModes.get(spv::ExecutionModePointMode);
-
-			if (tescModes.get(spv::ExecutionModeSpacingEqual)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingEqual;
-			} else if (tescModes.get(spv::ExecutionModeSpacingFractionalEven)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingFractionalEven;
-			} else if (tescModes.get(spv::ExecutionModeSpacingFractionalOdd)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingFractionalOdd;
-			} else if (teseModes.get(spv::ExecutionModeSpacingEqual)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingEqual;
-			} else if (teseModes.get(spv::ExecutionModeSpacingFractionalEven)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingFractionalEven;
-			} else if (teseModes.get(spv::ExecutionModeSpacingFractionalOdd)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingFractionalOdd;
-			} else {
-				errorLog = "Neither tessellation shader specifies a partition mode (SpacingEqual, SpacingFractionalOdd, or SpacingFractionalEven).";
-				return false;
-			}
-
-			if (tescModes.get(spv::ExecutionModeOutputVertices)) {
-				reflectData.numControlPoints = tescReflect.get_execution_mode_argument(spv::ExecutionModeOutputVertices);
-			} else if (teseModes.get(spv::ExecutionModeOutputVertices)) {
-				reflectData.numControlPoints = teseReflect.get_execution_mode_argument(spv::ExecutionModeOutputVertices);
-			} else {
-				errorLog = "Neither tessellation shader specifies the number of output control points.";
-				return false;
-			}
-
+			modes = std::move(reflected);
 			return true;
-
 #ifndef SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
 		} catch (SPIRV_CROSS_NAMESPACE::CompilerError& ex) {
 			errorLog = ex.what();
 			return false;
 		}
 #endif
+	}
+
+	/** Merges tessellation modes, preferring control-stage values over evaluation-stage values. */
+	static inline bool getTessReflectionData(const SPIRVTessExecutionModes& tesc,
+											  const SPIRVTessExecutionModes& tese,
+											  SPIRVTessReflectionData& reflectData, std::string& errorLog) {
+		const SPIRV_CROSS_NAMESPACE::Bitset& tescModes = tesc.modes;
+		const SPIRV_CROSS_NAMESPACE::Bitset& teseModes = tese.modes;
+		if (tescModes.get(spv::ExecutionModeTriangles)) {
+			reflectData.patchKind = spv::ExecutionModeTriangles;
+		} else if (tescModes.get(spv::ExecutionModeQuads)) {
+			reflectData.patchKind = spv::ExecutionModeQuads;
+		} else if (tescModes.get(spv::ExecutionModeIsolines)) {
+			reflectData.patchKind = spv::ExecutionModeIsolines;
+		} else if (teseModes.get(spv::ExecutionModeTriangles)) {
+			reflectData.patchKind = spv::ExecutionModeTriangles;
+		} else if (teseModes.get(spv::ExecutionModeQuads)) {
+			reflectData.patchKind = spv::ExecutionModeQuads;
+		} else if (teseModes.get(spv::ExecutionModeIsolines)) {
+			reflectData.patchKind = spv::ExecutionModeIsolines;
+		} else {
+			errorLog = "Neither tessellation shader specifies a patch input mode (Triangles, Quads, or Isolines).";
+			return false;
+		}
+
+		if (tescModes.get(spv::ExecutionModeVertexOrderCw)) {
+			reflectData.windingOrder = spv::ExecutionModeVertexOrderCw;
+		} else if (tescModes.get(spv::ExecutionModeVertexOrderCcw)) {
+			reflectData.windingOrder = spv::ExecutionModeVertexOrderCcw;
+		} else if (teseModes.get(spv::ExecutionModeVertexOrderCw)) {
+			reflectData.windingOrder = spv::ExecutionModeVertexOrderCw;
+		} else if (teseModes.get(spv::ExecutionModeVertexOrderCcw)) {
+			reflectData.windingOrder = spv::ExecutionModeVertexOrderCcw;
+		} else {
+			errorLog = "Neither tessellation shader specifies a winding order mode (VertexOrderCw or VertexOrderCcw).";
+			return false;
+		}
+
+		reflectData.pointMode = tescModes.get(spv::ExecutionModePointMode) || teseModes.get(spv::ExecutionModePointMode);
+
+		if (tescModes.get(spv::ExecutionModeSpacingEqual)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingEqual;
+		} else if (tescModes.get(spv::ExecutionModeSpacingFractionalEven)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingFractionalEven;
+		} else if (tescModes.get(spv::ExecutionModeSpacingFractionalOdd)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingFractionalOdd;
+		} else if (teseModes.get(spv::ExecutionModeSpacingEqual)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingEqual;
+		} else if (teseModes.get(spv::ExecutionModeSpacingFractionalEven)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingFractionalEven;
+		} else if (teseModes.get(spv::ExecutionModeSpacingFractionalOdd)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingFractionalOdd;
+		} else {
+			errorLog = "Neither tessellation shader specifies a partition mode (SpacingEqual, SpacingFractionalOdd, or SpacingFractionalEven).";
+			return false;
+		}
+
+		if (tescModes.get(spv::ExecutionModeOutputVertices)) {
+			reflectData.numControlPoints = tesc.outputVertices;
+		} else if (teseModes.get(spv::ExecutionModeOutputVertices)) {
+			reflectData.numControlPoints = tese.outputVertices;
+		} else {
+			errorLog = "Neither tessellation shader specifies the number of output control points.";
+			return false;
+		}
+
+		return true;
 	}
 
 	/** Returns the size in bytes of the interface variable. */

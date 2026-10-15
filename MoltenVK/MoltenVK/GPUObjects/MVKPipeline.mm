@@ -807,7 +807,10 @@ MVKGraphicsPipeline::MVKGraphicsPipeline(MVKDevice* device,
 	if (pTessCtlSS && pTessEvalSS) {
 		_isTessellationPipeline = true;
 
-		if (!getTessReflectionData(_tessCtlModule->getSPIRV(), pTessCtlSS->pName, _tessEvalModule->getSPIRV(), pTessEvalSS->pName, reflectData, reflectErrorLog) ) {
+		SPIRVTessExecutionModes tescModes, teseModes;
+		if (!_tessCtlModule->getTessExecutionModes(spv::ExecutionModelTessellationControl, pTessCtlSS->pName, tescModes, reflectErrorLog) ||
+			!_tessEvalModule->getTessExecutionModes(spv::ExecutionModelTessellationEvaluation, pTessEvalSS->pName, teseModes, reflectErrorLog) ||
+			!getTessReflectionData(tescModes, teseModes, reflectData, reflectErrorLog)) {
 			setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to reflect tessellation shaders: %s", reflectErrorLog.c_str()));
 			return;
 		}
