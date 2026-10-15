@@ -2,6 +2,7 @@
  * MVKQueryPool.mm
  *
  * Copyright (c) 2015-2026 The Brenwill Workshop Ltd. (http://www.brenwill.com)
+ * Modified for Headgasket VR, 2026.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -287,12 +288,26 @@ void MVKOcclusionQueryPool::beginQueryAddedTo(uint32_t query, MVKCommandBuffer* 
 #pragma mark Construction
 
 MVKOcclusionQueryPool::MVKOcclusionQueryPool(MVKDevice* device,
-                                             const VkQueryPoolCreateInfo* pCreateInfo) : MVKQueryPool(device, pCreateInfo, 1) {
+                                             const VkQueryPoolCreateInfo* pCreateInfo) :
+    MVKQueryPool(device, pCreateInfo, 1), _visibilityResultMTLBuffer(nil) {
 	// This buffer isn't directly used for queries, so it doesn't matter how big it is
 	VkDeviceSize reqBuffLen = (VkDeviceSize)pCreateInfo->queryCount * kMVKQuerySlotSizeInBytes;
+	VkDeviceSize maxBuffLen = getMetalFeatures().maxMTLBufferSize;
+	if (reqBuffLen > maxBuffLen) {
+		setConfigurationResult(reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY,
+			"vkCreateQueryPool(): Occlusion result buffer size %llu exceeds maximum Metal buffer size %llu.",
+			reqBuffLen, maxBuffLen));
+		return;
+	}
 
 	MTLResourceOptions mtlBuffOpts = MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache;
 	_visibilityResultMTLBuffer = [getMTLDevice() newBufferWithLength: reqBuffLen options: mtlBuffOpts];     // retained
+	if (!_visibilityResultMTLBuffer) {
+		setConfigurationResult(reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY,
+			"vkCreateQueryPool(): Could not allocate %llu bytes for %u occlusion queries.",
+			reqBuffLen, pCreateInfo->queryCount));
+		return;
+	}
 	[_visibilityResultMTLBuffer setLabel:@"Occlusion Query Result Buffer"];
 }
 

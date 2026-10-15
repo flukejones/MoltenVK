@@ -2,6 +2,7 @@
  * SPIRVReflection.h
  *
  * Copyright (c) 2019-2026 Chip Davis for Codeweavers
+ * Modified for Headgasket VR, 2026.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +22,12 @@
 
 #include <spirv.hpp>
 #include <spirv_common.hpp>
+#include <spirv_cross.hpp>
 #include <spirv_parser.hpp>
 #include <spirv_reflect.hpp>
+#include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
 
@@ -51,6 +55,12 @@ namespace mvk {
 
 		/** The number of control points output by the tessellation control shader. */
 		uint32_t numControlPoints = 0;
+	};
+
+	/** Low execution-mode flags used by tessellation; outputVertices is valid only with OutputVertices. */
+	struct SPIRVTessExecutionModes {
+		SPIRV_CROSS_NAMESPACE::Bitset modes;
+		uint32_t outputVertices = 0;
 	};
 
 #pragma mark -
@@ -95,100 +105,96 @@ namespace mvk {
 #pragma mark -
 #pragma mark Functions
 
-	/**
-	 * Given a tessellation control shader and a tessellation evaluation shader,
-	 * both in SPIR-V format, returns tessellation reflection data.
-	 */
+	/** Extracts literal modes for one entry point; parser or entry-point errors leave metadata unchanged. */
 	template<typename Vs>
-	static inline bool getTessReflectionData(const Vs& tesc, const std::string& tescEntryName,
-											 const Vs& tese, const std::string& teseEntryName,
-											 SPIRVTessReflectionData& reflectData, std::string& errorLog) {
+	static inline bool getTessExecutionModes(const Vs& spirv, spv::ExecutionModel model,
+										const std::string& entryName, SPIRVTessExecutionModes& metadata,
+										std::string& errorLog) {
 #ifndef SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
 		try {
 #endif
-			SPIRV_CROSS_NAMESPACE::CompilerReflection tescReflect(tesc);
-			SPIRV_CROSS_NAMESPACE::CompilerReflection teseReflect(tese);
-
-			if (!tescEntryName.empty()) {
-				tescReflect.set_entry_point(tescEntryName, spv::ExecutionModelTessellationControl);
+			SPIRV_CROSS_NAMESPACE::Compiler reflect(spirv);
+			if (!entryName.empty()) { reflect.set_entry_point(entryName, model); }
+			SPIRVTessExecutionModes reflected;
+			reflected.modes = SPIRV_CROSS_NAMESPACE::Bitset(reflect.get_execution_mode_bitset().get_lower());
+			if (reflected.modes.get(spv::ExecutionModeOutputVertices)) {
+				reflected.outputVertices = reflect.get_execution_mode_argument(spv::ExecutionModeOutputVertices);
 			}
-			if (!teseEntryName.empty()) {
-				teseReflect.set_entry_point(teseEntryName, spv::ExecutionModelTessellationEvaluation);
-			}
-
-			tescReflect.compile();
-			teseReflect.compile();
-
-			const SPIRV_CROSS_NAMESPACE::Bitset& tescModes = tescReflect.get_execution_mode_bitset();
-			const SPIRV_CROSS_NAMESPACE::Bitset& teseModes = teseReflect.get_execution_mode_bitset();
-
-			// Extract the parameters from the shaders.
-			if (tescModes.get(spv::ExecutionModeTriangles)) {
-				reflectData.patchKind = spv::ExecutionModeTriangles;
-			} else if (tescModes.get(spv::ExecutionModeQuads)) {
-				reflectData.patchKind = spv::ExecutionModeQuads;
-			} else if (tescModes.get(spv::ExecutionModeIsolines)) {
-				reflectData.patchKind = spv::ExecutionModeIsolines;
-			} else if (teseModes.get(spv::ExecutionModeTriangles)) {
-				reflectData.patchKind = spv::ExecutionModeTriangles;
-			} else if (teseModes.get(spv::ExecutionModeQuads)) {
-				reflectData.patchKind = spv::ExecutionModeQuads;
-			} else if (teseModes.get(spv::ExecutionModeIsolines)) {
-				reflectData.patchKind = spv::ExecutionModeIsolines;
-			} else {
-				errorLog = "Neither tessellation shader specifies a patch input mode (Triangles, Quads, or Isolines).";
-				return false;
-			}
-
-			if (tescModes.get(spv::ExecutionModeVertexOrderCw)) {
-				reflectData.windingOrder = spv::ExecutionModeVertexOrderCw;
-			} else if (tescModes.get(spv::ExecutionModeVertexOrderCcw)) {
-				reflectData.windingOrder = spv::ExecutionModeVertexOrderCcw;
-			} else if (teseModes.get(spv::ExecutionModeVertexOrderCw)) {
-				reflectData.windingOrder = spv::ExecutionModeVertexOrderCw;
-			} else if (teseModes.get(spv::ExecutionModeVertexOrderCcw)) {
-				reflectData.windingOrder = spv::ExecutionModeVertexOrderCcw;
-			} else {
-				errorLog = "Neither tessellation shader specifies a winding order mode (VertexOrderCw or VertexOrderCcw).";
-				return false;
-			}
-
-			reflectData.pointMode = tescModes.get(spv::ExecutionModePointMode) || teseModes.get(spv::ExecutionModePointMode);
-
-			if (tescModes.get(spv::ExecutionModeSpacingEqual)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingEqual;
-			} else if (tescModes.get(spv::ExecutionModeSpacingFractionalEven)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingFractionalEven;
-			} else if (tescModes.get(spv::ExecutionModeSpacingFractionalOdd)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingFractionalOdd;
-			} else if (teseModes.get(spv::ExecutionModeSpacingEqual)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingEqual;
-			} else if (teseModes.get(spv::ExecutionModeSpacingFractionalEven)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingFractionalEven;
-			} else if (teseModes.get(spv::ExecutionModeSpacingFractionalOdd)) {
-				reflectData.partitionMode = spv::ExecutionModeSpacingFractionalOdd;
-			} else {
-				errorLog = "Neither tessellation shader specifies a partition mode (SpacingEqual, SpacingFractionalOdd, or SpacingFractionalEven).";
-				return false;
-			}
-
-			if (tescModes.get(spv::ExecutionModeOutputVertices)) {
-				reflectData.numControlPoints = tescReflect.get_execution_mode_argument(spv::ExecutionModeOutputVertices);
-			} else if (teseModes.get(spv::ExecutionModeOutputVertices)) {
-				reflectData.numControlPoints = teseReflect.get_execution_mode_argument(spv::ExecutionModeOutputVertices);
-			} else {
-				errorLog = "Neither tessellation shader specifies the number of output control points.";
-				return false;
-			}
-
+			metadata = std::move(reflected);
 			return true;
-
 #ifndef SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
 		} catch (SPIRV_CROSS_NAMESPACE::CompilerError& ex) {
 			errorLog = ex.what();
 			return false;
 		}
 #endif
+	}
+
+	/** Merges tessellation modes, preferring control-stage values over evaluation-stage values. */
+	static inline bool getTessReflectionData(const SPIRVTessExecutionModes& tesc,
+											const SPIRVTessExecutionModes& tese,
+											SPIRVTessReflectionData& reflectData, std::string& errorLog) {
+		const SPIRV_CROSS_NAMESPACE::Bitset& tescModes = tesc.modes;
+		const SPIRV_CROSS_NAMESPACE::Bitset& teseModes = tese.modes;
+		if (tescModes.get(spv::ExecutionModeTriangles)) {
+			reflectData.patchKind = spv::ExecutionModeTriangles;
+		} else if (tescModes.get(spv::ExecutionModeQuads)) {
+			reflectData.patchKind = spv::ExecutionModeQuads;
+		} else if (tescModes.get(spv::ExecutionModeIsolines)) {
+			reflectData.patchKind = spv::ExecutionModeIsolines;
+		} else if (teseModes.get(spv::ExecutionModeTriangles)) {
+			reflectData.patchKind = spv::ExecutionModeTriangles;
+		} else if (teseModes.get(spv::ExecutionModeQuads)) {
+			reflectData.patchKind = spv::ExecutionModeQuads;
+		} else if (teseModes.get(spv::ExecutionModeIsolines)) {
+			reflectData.patchKind = spv::ExecutionModeIsolines;
+		} else {
+			errorLog = "Neither tessellation shader specifies a patch input mode (Triangles, Quads, or Isolines).";
+			return false;
+		}
+
+		if (tescModes.get(spv::ExecutionModeVertexOrderCw)) {
+			reflectData.windingOrder = spv::ExecutionModeVertexOrderCw;
+		} else if (tescModes.get(spv::ExecutionModeVertexOrderCcw)) {
+			reflectData.windingOrder = spv::ExecutionModeVertexOrderCcw;
+		} else if (teseModes.get(spv::ExecutionModeVertexOrderCw)) {
+			reflectData.windingOrder = spv::ExecutionModeVertexOrderCw;
+		} else if (teseModes.get(spv::ExecutionModeVertexOrderCcw)) {
+			reflectData.windingOrder = spv::ExecutionModeVertexOrderCcw;
+		} else {
+			errorLog = "Neither tessellation shader specifies a winding order mode (VertexOrderCw or VertexOrderCcw).";
+			return false;
+		}
+
+		reflectData.pointMode = tescModes.get(spv::ExecutionModePointMode) || teseModes.get(spv::ExecutionModePointMode);
+
+		if (tescModes.get(spv::ExecutionModeSpacingEqual)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingEqual;
+		} else if (tescModes.get(spv::ExecutionModeSpacingFractionalEven)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingFractionalEven;
+		} else if (tescModes.get(spv::ExecutionModeSpacingFractionalOdd)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingFractionalOdd;
+		} else if (teseModes.get(spv::ExecutionModeSpacingEqual)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingEqual;
+		} else if (teseModes.get(spv::ExecutionModeSpacingFractionalEven)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingFractionalEven;
+		} else if (teseModes.get(spv::ExecutionModeSpacingFractionalOdd)) {
+			reflectData.partitionMode = spv::ExecutionModeSpacingFractionalOdd;
+		} else {
+			errorLog = "Neither tessellation shader specifies a partition mode (SpacingEqual, SpacingFractionalOdd, or SpacingFractionalEven).";
+			return false;
+		}
+
+		if (tescModes.get(spv::ExecutionModeOutputVertices)) {
+			reflectData.numControlPoints = tesc.outputVertices;
+		} else if (teseModes.get(spv::ExecutionModeOutputVertices)) {
+			reflectData.numControlPoints = tese.outputVertices;
+		} else {
+			errorLog = "Neither tessellation shader specifies the number of output control points.";
+			return false;
+		}
+
+		return true;
 	}
 
 	/** Returns the size in bytes of the interface variable. */
@@ -231,16 +237,61 @@ namespace mvk {
 		return getShaderInterfaceVariableAlignment(output);
 	}
 
+	/** Index value meaning no interface variable. */
+	static constexpr size_t kSPIRVNoInterfaceVariable = size_t(-1);
+
 	auto addSat = [](uint32_t a, uint32_t b) { return a == uint32_t(-1) ? a : a + b; };
+
+	/** Array-sizing specialization IDs and scalar values; up to eight values remain inline. */
+	using SPIRVSpecializationValues = SPIRV_CROSS_NAMESPACE::SmallVector<std::pair<uint32_t, uint64_t>, 8>;
+
+	/** Applies scalar specialization values before evaluating interface arrays or converting MSL. */
+	static inline void setSpecializationValues(SPIRV_CROSS_NAMESPACE::Compiler& compiler, const SPIRVSpecializationValues& values) {
+		for (const auto& sc : compiler.get_specialization_constants()) {
+			for (const auto& value : values) {
+				if (value.first == sc.constant_id) { compiler.get_constant(sc.id).m.c[0].r[0].u64 = value.second; }
+			}
+		}
+	}
+
+	/** Retains defaults for specialization constants used by array lengths, including expression dependencies. */
+	template<typename Vs>
+	static inline bool getArraySizeSpecializationConstants(const Vs& spirv, SPIRVSpecializationValues& values, std::string& errorLog) {
+#ifndef SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
+		try {
+#endif
+			SPIRV_CROSS_NAMESPACE::Compiler compiler(spirv);
+			SPIRVSpecializationValues defaults;
+			for (const auto& sc : compiler.get_specialization_constants()) {
+				const auto& constant = compiler.get_constant(sc.id);
+				if (constant.is_used_as_array_length) { defaults.emplace_back(sc.constant_id, constant.m.c[0].r[0].u64); }
+			}
+			std::sort(defaults.begin(), defaults.end());
+			values = std::move(defaults);
+			return true;
+#ifndef SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
+		} catch (SPIRV_CROSS_NAMESPACE::CompilerError& ex) {
+			errorLog = ex.what();
+			return false;
+		}
+#endif
+	}
+
+	static inline uint32_t getElementCount(const SPIRV_CROSS_NAMESPACE::CompilerReflection& reflect,
+										 const SPIRV_CROSS_NAMESPACE::SPIRType* type) {
+		uint32_t count = type->array.empty() ? 1 : type->array_size_literal[0] ? type->array[0] : reflect.evaluate_constant_u32(type->array[0]);
+		return count * type->columns;
+	}
 
 	template<typename Vi>
 	static inline uint32_t getShaderInterfaceStructMembers(const SPIRV_CROSS_NAMESPACE::CompilerReflection& reflect,
-														   Vi& vars, SPIRVShaderInterfaceVariable* pParentFirstMember,
+														   Vi& vars, size_t parentFirstMemberIdx,
 														   const SPIRV_CROSS_NAMESPACE::SPIRType* structType, spv::StorageClass storage,
 														   bool patch, uint32_t loc) {
 		bool isUsed = true;
 		auto biType = spv::BuiltInMax;
-		SPIRVShaderInterfaceVariable* pFirstMember = nullptr;
+		// Track the first member by index, because adding to vars may reallocate it.
+		size_t firstMemberIdx = kSPIRVNoInterfaceVariable;
 		size_t mbrCnt = structType->member_types.size();
 		for (uint32_t mbrIdx = 0; mbrIdx < mbrCnt; mbrIdx++) {
 			// Each member may have a location decoration. If not, each member
@@ -256,43 +307,43 @@ namespace mvk {
 				isUsed = reflect.has_active_builtin(biType, storage);
 			}
 			const SPIRV_CROSS_NAMESPACE::SPIRType* type = &reflect.get_type(structType->member_types[mbrIdx]);
-			uint32_t elemCnt = (type->array.empty() ? 1 : type->array[0]) * type->columns;
+			uint32_t elemCnt = getElementCount(reflect, type);
 			for (uint32_t elemIdx = 0; elemIdx < elemCnt; elemIdx++) {
 				if (type->basetype == SPIRV_CROSS_NAMESPACE::SPIRType::Struct)
-					loc = getShaderInterfaceStructMembers(reflect, vars, pFirstMember, type, storage, patch, loc);
+					loc = getShaderInterfaceStructMembers(reflect, vars, firstMemberIdx, type, storage, patch, loc);
 				else {
 					// The alignment of a structure is the same as the largest member of the structure.
 					// Consequently, the first flattened member of a structure should align with structure itself.
 					vars.push_back({type->basetype, type->vecsize, loc, cmp, 0, biType, patch, isUsed});
-					auto& currOutput = vars.back();
-					if ( !pFirstMember ) { pFirstMember = &currOutput; }
-					pFirstMember->firstStructMemberAlignment = std::max(pFirstMember->firstStructMemberAlignment, getShaderOutputSize(currOutput));
+					if (firstMemberIdx == kSPIRVNoInterfaceVariable) { firstMemberIdx = vars.size() - 1; }
+					auto& firstMember = vars[firstMemberIdx];
+					firstMember.firstStructMemberAlignment = std::max(firstMember.firstStructMemberAlignment, getShaderOutputSize(vars.back()));
 					loc = addSat(loc, 1);
 				}
 			}
 		}
 
 		// Set the parent's first member alignment to the largest alignment found so far.
-		if ( !pParentFirstMember ) {
-			pParentFirstMember = pFirstMember;
-		} else if (pParentFirstMember && pFirstMember) {
-			pParentFirstMember->firstStructMemberAlignment = std::max(pParentFirstMember->firstStructMemberAlignment, pFirstMember->firstStructMemberAlignment);
+		if (parentFirstMemberIdx != kSPIRVNoInterfaceVariable && firstMemberIdx != kSPIRVNoInterfaceVariable) {
+			auto& parentFirstMember = vars[parentFirstMemberIdx];
+			parentFirstMember.firstStructMemberAlignment = std::max(parentFirstMember.firstStructMemberAlignment, vars[firstMemberIdx].firstStructMemberAlignment);
 		}
 
 		return loc;
 	}
 	template<typename Vo>
 	static inline uint32_t getShaderOutputStructMembers(const SPIRV_CROSS_NAMESPACE::CompilerReflection& reflect,
-														Vo& outputs, SPIRVShaderOutput* pParentFirstMember,
+														Vo& outputs, size_t parentFirstMemberIdx,
 														const SPIRV_CROSS_NAMESPACE::SPIRType* structType, spv::StorageClass storage,
 														bool patch, uint32_t loc) {
-		return getShaderInterfaceStructMembers(reflect, outputs, pParentFirstMember, structType, storage, patch, loc);
+		return getShaderInterfaceStructMembers(reflect, outputs, parentFirstMemberIdx, structType, storage, patch, loc);
 	}
 
 	/** Given a shader in SPIR-V format, returns interface reflection data. */
 	template<typename Vs, typename Vi>
 	static inline bool getShaderInterfaceVariables(const Vs& spirv, spv::StorageClass storage, spv::ExecutionModel model,
-												   const std::string& entryName, Vi& vars, std::string& errorLog) {
+												   const std::string& entryName, Vi& vars, std::string& errorLog,
+												   const SPIRVSpecializationValues& specValues = {}) {
 #ifndef SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
 		try {
 #endif
@@ -302,6 +353,7 @@ namespace mvk {
 			if (!entryName.empty()) {
 				reflect.set_entry_point(entryName, model);
 			}
+				setSpecializationValues(reflect, specValues);
 			reflect.compile();
 			reflect.update_active_builtins();
 
@@ -339,11 +391,10 @@ namespace mvk {
 					 biType == spv::BuiltInClipDistance || biType == spv::BuiltInCullDistance))
 					type = &reflect.get_type(type->parent_type);
 
-				uint32_t elemCnt = (type->array.empty() ? 1 : type->array[0]) * type->columns;
+					uint32_t elemCnt = getElementCount(reflect, type);
 				for (uint32_t i = 0; i < elemCnt; i++) {
 					if (type->basetype == SPIRV_CROSS_NAMESPACE::SPIRType::Struct) {
-						SPIRVShaderInterfaceVariable* pFirstMember = nullptr;
-						loc = getShaderInterfaceStructMembers(reflect, vars, pFirstMember, type, storage, patch, loc);
+						loc = getShaderInterfaceStructMembers(reflect, vars, kSPIRVNoInterfaceVariable, type, storage, patch, loc);
 					} else {
 						vars.push_back({type->basetype, type->vecsize, loc, cmp, 0, biType, patch, isUsed});
 						loc = addSat(loc, 1);
@@ -370,13 +421,13 @@ namespace mvk {
 	}
 	template<typename Vs, typename Vo>
 	static inline bool getShaderOutputs(const Vs& spirv, spv::ExecutionModel model, const std::string& entryName,
-										Vo& outputs, std::string& errorLog) {
-		return getShaderInterfaceVariables(spirv, spv::StorageClassOutput, model, entryName, outputs, errorLog);
+										Vo& outputs, std::string& errorLog, const SPIRVSpecializationValues& specValues = {}) {
+		return getShaderInterfaceVariables(spirv, spv::StorageClassOutput, model, entryName, outputs, errorLog, specValues);
 	}
 	template<typename Vs, typename Vo>
 	static inline bool getShaderInputs(const Vs& spirv, spv::ExecutionModel model, const std::string& entryName,
-										Vo& outputs, std::string& errorLog) {
-		return getShaderInterfaceVariables(spirv, spv::StorageClassInput, model, entryName, outputs, errorLog);
+										Vo& outputs, std::string& errorLog, const SPIRVSpecializationValues& specValues = {}) {
+		return getShaderInterfaceVariables(spirv, spv::StorageClassInput, model, entryName, outputs, errorLog, specValues);
 	}
 
 }

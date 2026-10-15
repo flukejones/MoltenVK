@@ -2,6 +2,7 @@
  * MVKPipeline.mm
  *
  * Copyright (c) 2015-2026 The Brenwill Workshop Ltd. (http://www.brenwill.com)
+ * Modified for Headgasket VR, 2026.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -807,7 +808,10 @@ MVKGraphicsPipeline::MVKGraphicsPipeline(MVKDevice* device,
 	if (pTessCtlSS && pTessEvalSS) {
 		_isTessellationPipeline = true;
 
-		if (!getTessReflectionData(_tessCtlModule->getSPIRV(), pTessCtlSS->pName, _tessEvalModule->getSPIRV(), pTessEvalSS->pName, reflectData, reflectErrorLog) ) {
+		SPIRVTessExecutionModes tescModes, teseModes;
+		if (!_tessCtlModule->getTessExecutionModes(spv::ExecutionModelTessellationControl, pTessCtlSS->pName, tescModes, reflectErrorLog) ||
+			!_tessEvalModule->getTessExecutionModes(spv::ExecutionModelTessellationEvaluation, pTessEvalSS->pName, teseModes, reflectErrorLog) ||
+			!getTessReflectionData(tescModes, teseModes, reflectData, reflectErrorLog)) {
 			setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to reflect tessellation shaders: %s", reflectErrorLog.c_str()));
 			return;
 		}
@@ -1184,7 +1188,7 @@ MTLRenderPipelineDescriptor* MVKGraphicsPipeline::newMTLRenderPipelineDescriptor
 
 	SPIRVShaderOutputs vtxOutputs;
 	std::string errorLog;
-	if (!getShaderOutputs(_vertexModule->getSPIRV(), spv::ExecutionModelVertex, pVertexSS->pName, vtxOutputs, errorLog) ) {
+	if (!_vertexModule->getShaderInterfaceVariables(spv::StorageClassOutput, spv::ExecutionModelVertex, pVertexSS->pName, pVertexSS->pSpecializationInfo, vtxOutputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get vertex outputs: %s", errorLog.c_str()));
 		return nil;
 	}
@@ -1223,7 +1227,7 @@ MTLComputePipelineDescriptor* MVKGraphicsPipeline::newMTLTessVertexStageDescript
 
 	SPIRVShaderInputs tcInputs;
 	std::string errorLog;
-	if (!getShaderInputs(_tessCtlModule->getSPIRV(), spv::ExecutionModelTessellationControl, pTessCtlSS->pName, tcInputs, errorLog) ) {
+	if (!_tessCtlModule->getShaderInterfaceVariables(spv::StorageClassInput, spv::ExecutionModelTessellationControl, pTessCtlSS->pName, pTessCtlSS->pSpecializationInfo, tcInputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get tessellation control inputs: %s", errorLog.c_str()));
 		return nil;
 	}
@@ -1311,11 +1315,11 @@ MTLComputePipelineDescriptor* MVKGraphicsPipeline::newMTLTessControlStageDescrip
 	SPIRVShaderOutputs vtxOutputs;
 	SPIRVShaderInputs teInputs;
 	std::string errorLog;
-	if (!getShaderOutputs(_vertexModule->getSPIRV(), spv::ExecutionModelVertex, pVertexSS->pName, vtxOutputs, errorLog) ) {
+	if (!_vertexModule->getShaderInterfaceVariables(spv::StorageClassOutput, spv::ExecutionModelVertex, pVertexSS->pName, pVertexSS->pSpecializationInfo, vtxOutputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get vertex outputs: %s", errorLog.c_str()));
 		return nil;
 	}
-	if (!getShaderInputs(_tessEvalModule->getSPIRV(), spv::ExecutionModelTessellationEvaluation, pTessEvalSS->pName, teInputs, errorLog) ) {
+	if (!_tessEvalModule->getShaderInterfaceVariables(spv::StorageClassInput, spv::ExecutionModelTessellationEvaluation, pTessEvalSS->pName, pTessEvalSS->pSpecializationInfo, teInputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get tessellation evaluation inputs: %s", errorLog.c_str()));
 		return nil;
 	}
@@ -1355,11 +1359,11 @@ MTLRenderPipelineDescriptor* MVKGraphicsPipeline::newMTLTessRasterStageDescripto
 	SPIRVShaderOutputs tcOutputs, teOutputs;
 	SPIRVShaderInputs teInputs;
 	std::string errorLog;
-	if (!getShaderOutputs(_tessCtlModule->getSPIRV(), spv::ExecutionModelTessellationControl, pTessCtlSS->pName, tcOutputs, errorLog) ) {
+	if (!_tessCtlModule->getShaderInterfaceVariables(spv::StorageClassOutput, spv::ExecutionModelTessellationControl, pTessCtlSS->pName, pTessCtlSS->pSpecializationInfo, tcOutputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get tessellation control outputs: %s", errorLog.c_str()));
 		return nil;
 	}
-	if (!getShaderOutputs(_tessEvalModule->getSPIRV(), spv::ExecutionModelTessellationEvaluation, pTessEvalSS->pName, teOutputs, errorLog) ) {
+	if (!_tessEvalModule->getShaderInterfaceVariables(spv::StorageClassOutput, spv::ExecutionModelTessellationEvaluation, pTessEvalSS->pName, pTessEvalSS->pSpecializationInfo, teOutputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get tessellation evaluation outputs: %s", errorLog.c_str()));
 		return nil;
 	}
@@ -2960,6 +2964,10 @@ namespace mvk {
 				cfg.resourceBindings,
 				cfg.discreteDescriptorSets,
 				cfg.dynamicBufferDescriptors);
+		uint64_t count = cfg.specializationConstants.size();
+		archive(count);
+		cfg.specializationConstants.resize(count);
+		for (auto& value : cfg.specializationConstants) { archive(value.first, value.second); }
 	}
 
 	template<class Archive>
@@ -3134,7 +3142,7 @@ void mvkValidateCeralArchiveDefinitions() {
 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLShaderInterfaceVariable>(3);
 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLResourceBinding>(2);
 	missingBytes += mvkValidateCerealArchiveSize<mvk::DescriptorBinding>();
-	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionConfiguration>(104);	// Contains collection
+	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionConfiguration>(104 + sizeof(mvk::SPIRVSpecializationValues) - sizeof(uint64_t));	// Contains collections
 	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionResultInfo>(39);		// Contains collection
 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLSpecializationMacroInfo>(22);			// Contains string
 	missingBytes += mvkValidateCerealArchiveSize<MVKShaderModuleKey>();

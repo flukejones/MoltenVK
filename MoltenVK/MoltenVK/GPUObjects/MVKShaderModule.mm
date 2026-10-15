@@ -2,6 +2,7 @@
  * MVKShaderModule.mm
  *
  * Copyright (c) 2015-2026 The Brenwill Workshop Ltd. (http://www.brenwill.com)
+ * Modified for Headgasket VR, 2026.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -325,7 +326,7 @@ MVKShaderLibrary* MVKShaderLibraryCache::getShaderLibrary(SPIRVToMSLConversionCo
 	MVKShaderLibrary* shLib = findShaderLibrary(pShaderConfig, pShaderFeedback, startTime);
 	if ( !shLib && !pipeline->shouldFailOnPipelineCompileRequired() ) {
 		SPIRVToMSLConversionResult conversionResult;
-		if (shaderModule->convert(pShaderConfig, conversionResult)) {
+		if (shaderModule->convert(pShaderConfig, conversionResult) && !conversionResult.msl.empty()) {
 			shLib = addShaderLibrary(pShaderConfig, conversionResult);
 			if (pShaderFeedback) {
 				pShaderFeedback->duration += mvkGetElapsedNanoseconds(startTime);
@@ -357,11 +358,24 @@ MVKShaderLibrary* MVKShaderLibraryCache::findShaderLibrary(SPIRVToMSLConversionC
 	return nullptr;
 }
 
+// Returns the configuration to keep for a cached conversion. A cached configuration is only read by
+// matches() and alignWith(), which ignore every resource binding not used by the converted stage, so
+// only those are kept. A pipeline layout gives one resource binding per binding and per shader stage.
+static SPIRVToMSLConversionConfiguration getCachedShaderConfig(const SPIRVToMSLConversionConfiguration* pShaderConfig) {
+	SPIRVToMSLConversionConfiguration config = *pShaderConfig;
+	vector<MSLResourceBinding> usedBindings;
+	for (auto& rb : config.resourceBindings) {
+		if (rb.resourceBinding.stage == config.options.entryPointStage && rb.outIsUsedByShader) { usedBindings.push_back(rb); }
+	}
+	config.resourceBindings = std::move(usedBindings);
+	return config;
+}
+
 // Adds and returns a new shader library configured from the specified conversion configuration.
 MVKShaderLibrary* MVKShaderLibraryCache::addShaderLibrary(const SPIRVToMSLConversionConfiguration* pShaderConfig,
 														  const SPIRVToMSLConversionResult& conversionResult) {
 	MVKShaderLibrary* shLib = new MVKShaderLibrary(_owner, conversionResult);
-	_shaderLibraries.emplace_back(*pShaderConfig, shLib);
+	_shaderLibraries.emplace_back(getCachedShaderConfig(pShaderConfig), shLib);
 	return shLib;
 }
 
@@ -370,7 +384,7 @@ MVKShaderLibrary* MVKShaderLibraryCache::addShaderLibrary(const SPIRVToMSLConver
 														  const SPIRVToMSLConversionResultInfo& resultInfo,
 														  const MVKCompressor<std::string> compressedMSL) {
 	MVKShaderLibrary* shLib = new MVKShaderLibrary(_owner, resultInfo, compressedMSL);
-	_shaderLibraries.emplace_back(*pShaderConfig, shLib);
+	_shaderLibraries.emplace_back(getCachedShaderConfig(pShaderConfig), shLib);
 	return shLib;
 }
 
@@ -393,12 +407,43 @@ MVKShaderLibraryCache::~MVKShaderLibraryCache() {
 #pragma mark -
 #pragma mark MVKShaderModule
 
+static uint64_t getSpecializationValue(const VkSpecializationInfo* specialization, uint32_t id, uint64_t defaultValue) {
+	for (uint32_t i = 0; specialization && i < specialization->mapEntryCount; i++) {
+		const auto& entry = specialization->pMapEntries[i];
+		if (entry.constantID == id) {
+			uint64_t value = 0;
+			memcpy(&value, (const char*)specialization->pData + entry.offset, std::min(entry.size, sizeof(value)));
+			return value;
+		}
+	}
+	return defaultValue;
+}
+
+static void populateSpecializationValues(const SPIRVSpecializationValues& defaults,
+										const VkSpecializationInfo* specialization, SPIRVSpecializationValues& values) {
+	values.clear();
+	for (const auto& value : defaults) { values.emplace_back(value.first, getSpecializationValue(specialization, value.first, value.second)); }
+}
+
+static bool matchesSpecializationValues(const SPIRVSpecializationValues& defaults,
+										   const SPIRVSpecializationValues& values, const VkSpecializationInfo* specialization) {
+	for (size_t i = 0; i < defaults.size(); i++) {
+		if (values[i].second != getSpecializationValue(specialization, defaults[i].first, defaults[i].second)) { return false; }
+	}
+	return true;
+}
+
 MVKMTLFunction MVKShaderModule::getMTLFunction(SPIRVToMSLConversionConfiguration* pShaderConfig,
 											   const VkSpecializationInfo* pSpecializationInfo,
 											   MVKPipeline* pipeline,
 											   VkPipelineCreationFeedback* pShaderFeedback) {
 	MVKShaderLibrary* mvkLib = _directMSLLibrary;
 	if ( !mvkLib ) {
+		if ( !_arraySizeSpecializationValid ) {
+			reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to read shader array sizes: %s", _arraySizeSpecializationError.c_str());
+			return MVKMTLFunctionNull;
+		}
+		populateSpecializationValues(_arraySizeSpecializationConstants, pSpecializationInfo, pShaderConfig->specializationConstants);
 		uint64_t startTime = pShaderFeedback ? mvkGetTimestamp() : getPerformanceTimestamp();
 		MVKPipelineCache* pipelineCache = pipeline->getPipelineCache();
 		if (pipelineCache) {
@@ -413,6 +458,47 @@ MVKMTLFunction MVKShaderModule::getMTLFunction(SPIRVToMSLConversionConfiguration
 	}
 
 	return mvkLib ? mvkLib->getMTLFunction(pSpecializationInfo, pShaderFeedback, this) : MVKMTLFunctionNull;
+}
+
+bool MVKShaderModule::getShaderInterfaceVariables(spv::StorageClass storage, spv::ExecutionModel model, const char* entryName,
+												  const VkSpecializationInfo* specialization,
+												  MVKSmallVector<SPIRVShaderInterfaceVariable, 32>& vars, string& errorLog) {
+	lock_guard<mutex> lock(_accessLock);
+	if ( !_arraySizeSpecializationValid ) {
+		errorLog = _arraySizeSpecializationError;
+		return false;
+	}
+	for (const auto& cached : _interfaceVariables) {
+		if (cached.storage == storage && cached.model == model && cached.entryName == entryName &&
+			matchesSpecializationValues(_arraySizeSpecializationConstants, cached.specializationValues, specialization)) {
+			vars.assign(cached.variables.begin(), cached.variables.end());
+			return true;
+		}
+	}
+	SPIRVSpecializationValues values;
+	populateSpecializationValues(_arraySizeSpecializationConstants, specialization, values);
+	MVKSmallVector<SPIRVShaderInterfaceVariable, 32> reflected;
+	if ( !mvk::getShaderInterfaceVariables(getSPIRV(), storage, model, entryName, reflected, errorLog, values) ) { return false; }
+	_interfaceVariables.push_back({storage, model, entryName, std::move(values), std::move(reflected)});
+	const auto& cached = _interfaceVariables.back();
+	vars.assign(cached.variables.begin(), cached.variables.end());
+	return true;
+}
+
+bool MVKShaderModule::getTessExecutionModes(spv::ExecutionModel model, const char* entryName,
+										  SPIRVTessExecutionModes& metadata, string& errorLog) {
+	lock_guard<mutex> lock(_accessLock);
+	for (const auto& cached : _tessExecutionModes) {
+		if (cached.model == model && cached.entryName == entryName) {
+			metadata = cached.metadata;
+			return true;
+		}
+	}
+	SPIRVTessExecutionModes reflected;
+	if ( !mvk::getTessExecutionModes(getSPIRV(), model, entryName, reflected, errorLog) ) { return false; }
+	_tessExecutionModes.push_back({model, entryName, reflected});
+	metadata = std::move(reflected);
+	return true;
 }
 
 bool MVKShaderModule::convert(SPIRVToMSLConversionConfiguration* pShaderConfig,
@@ -505,6 +591,7 @@ MVKShaderModule::MVKShaderModule(MVKDevice* device,
 			addPerformanceInterval(getPerformanceStats().shaderCompilation.hashShaderCode, startTime);
 
 			_spvConverter.setSPIRV(pCreateInfo->pCode, spvCount);
+			_arraySizeSpecializationValid = mvk::getArraySizeSpecializationConstants(getSPIRV(), _arraySizeSpecializationConstants, _arraySizeSpecializationError);
 
 			break;
 		}

@@ -2,6 +2,7 @@
  * MVKShaderModule.h
  *
  * Copyright (c) 2015-2026 The Brenwill Workshop Ltd. (http://www.brenwill.com)
+ * Modified for Headgasket VR, 2026.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +24,8 @@
 #include "MVKCodec.h"
 #include "MVKSmallVector.h"
 #include <MoltenVKShaderConverter/SPIRVToMSLConverter.h>
+#include <MoltenVKShaderConverter/SPIRVReflection.h>
+#include <map>
 #include <mutex>
 
 #import <Metal/Metal.h>
@@ -260,6 +263,15 @@ public:
 	/** Returns the original SPIR-V code that was specified when this object was created. */
 	const std::vector<uint32_t>& getSPIRV() { return _spvConverter.getSPIRV(); }
 
+	/** Copies reflected interface variables for this entry point and effective array-sizing specialization. */
+	bool getShaderInterfaceVariables(spv::StorageClass storage, spv::ExecutionModel model, const char* entryName,
+									 const VkSpecializationInfo* specialization,
+									 MVKSmallVector<mvk::SPIRVShaderInterfaceVariable, 32>& vars, std::string& errorLog);
+
+	/** Retrieves immutable tessellation modes for this stage and entry point; failed parses are not cached. */
+	bool getTessExecutionModes(spv::ExecutionModel model, const char* entryName,
+							  mvk::SPIRVTessExecutionModes& metadata, std::string& errorLog);
+
     /** Sets the number of threads in a single compute kernel workgroup, per dimension. */
     void setWorkgroupSize(uint32_t x, uint32_t y, uint32_t z);
     
@@ -279,6 +291,23 @@ protected:
 	mvk::SPIRVToMSLConverter _spvConverter;
 	MVKShaderLibrary* _directMSLLibrary;
 	MVKShaderModuleKey _key;
+	struct ShaderInterfaceEntry {
+		spv::StorageClass storage;
+		spv::ExecutionModel model;
+		std::string entryName;
+		mvk::SPIRVSpecializationValues specializationValues;
+		MVKSmallVector<mvk::SPIRVShaderInterfaceVariable, 32> variables;
+	};
+	MVKSmallVector<ShaderInterfaceEntry, 1> _interfaceVariables;
+	mvk::SPIRVSpecializationValues _arraySizeSpecializationConstants;
+	std::string _arraySizeSpecializationError;
+	bool _arraySizeSpecializationValid = true;
+	struct TessExecutionModeEntry {
+		spv::ExecutionModel model;
+		std::string entryName;
+		mvk::SPIRVTessExecutionModes metadata;
+	};
+	MVKSmallVector<TessExecutionModeEntry, 1> _tessExecutionModes;
     std::mutex _accessLock;
 };
 

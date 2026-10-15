@@ -2,6 +2,7 @@
  * SPIRVToMSLConverter.h
  *
  * Copyright (c) 2015-2026 The Brenwill Workshop Ltd. (http://www.brenwill.com)
+ * Modified for Headgasket VR, 2026.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +22,7 @@
 
 #include <spirv.hpp>
 #include <spirv_msl.hpp>
+#include "SPIRVReflection.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -153,6 +155,7 @@ namespace mvk {
 		std::vector<MSLResourceBinding> resourceBindings;
 		std::vector<uint32_t> discreteDescriptorSets;
 		std::vector<DescriptorBinding> dynamicBufferDescriptors;
+		SPIRVSpecializationValues specializationConstants;
 
 		/** Returns whether the pipeline stage being converted supports vertex attributes. */
 		bool stageSupportsVertexAttributes() const;
