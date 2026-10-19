@@ -1190,18 +1190,28 @@ MTLRenderPipelineDescriptor* MVKGraphicsPipeline::newMTLRenderPipelineDescriptor
 	std::string errorLog;
 	if (!_vertexModule->getShaderInterfaceVariables(spv::StorageClassOutput, spv::ExecutionModelVertex, pVertexSS->pName, pVertexSS->pSpecializationInfo, vtxOutputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get vertex outputs: %s", errorLog.c_str()));
+		[plDesc release];
 		return nil;
 	}
 
 	// Add shader stages. Compile vertex shader before others just in case conversion changes anything...like rasterizaion disable.
-	if (!addVertexShaderToPipeline(plDesc, pCreateInfo, shaderConfig, pVertexSS, pVertexFB, pFragmentSS)) { return nil; }
+	if (!addVertexShaderToPipeline(plDesc, pCreateInfo, shaderConfig, pVertexSS, pVertexFB, pFragmentSS)) {
+		[plDesc release];
+		return nil;
+	}
 
 	// Vertex input
 	// This needs to happen before compiling the fragment shader, or we'll lose information on vertex attributes.
-	if (!addVertexInputToPipeline(plDesc.vertexDescriptor, pCreateInfo->pVertexInputState, shaderConfig)) { return nil; }
+	if (!addVertexInputToPipeline(plDesc.vertexDescriptor, pCreateInfo->pVertexInputState, shaderConfig)) {
+		[plDesc release];
+		return nil;
+	}
 
 	// Fragment shader - only add if rasterization is enabled
-	if (!addFragmentShaderToPipeline(plDesc, pCreateInfo, shaderConfig, vtxOutputs, pFragmentSS, pFragmentFB)) { return nil; }
+	if (!addFragmentShaderToPipeline(plDesc, pCreateInfo, shaderConfig, vtxOutputs, pFragmentSS, pFragmentFB)) {
+		[plDesc release];
+		return nil;
+	}
 
 	// Output
 	addFragmentOutputToPipeline(plDesc, pCreateInfo);
@@ -1229,6 +1239,7 @@ MTLComputePipelineDescriptor* MVKGraphicsPipeline::newMTLTessVertexStageDescript
 	std::string errorLog;
 	if (!_tessCtlModule->getShaderInterfaceVariables(spv::StorageClassInput, spv::ExecutionModelTessellationControl, pTessCtlSS->pName, pTessCtlSS->pSpecializationInfo, tcInputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get tessellation control inputs: %s", errorLog.c_str()));
+		[plDesc release];
 		return nil;
 	}
 
@@ -1239,11 +1250,17 @@ MTLComputePipelineDescriptor* MVKGraphicsPipeline::newMTLTessVertexStageDescript
 	}), tcInputs.end());
 
 	// Add shader stages.
-	if (!addVertexShaderToPipeline(plDesc, pCreateInfo, shaderConfig, tcInputs, pVertexSS, pVertexFB, pVtxFunctions)) { return nil; }
+	if (!addVertexShaderToPipeline(plDesc, pCreateInfo, shaderConfig, tcInputs, pVertexSS, pVertexFB, pVtxFunctions)) {
+		[plDesc release];
+		return nil;
+	}
 
 	// Vertex input
 	plDesc.stageInputDescriptor = [MTLStageInputOutputDescriptor stageInputOutputDescriptor];
-	if (!addVertexInputToPipeline(plDesc.stageInputDescriptor, pCreateInfo->pVertexInputState, shaderConfig)) { return nil; }
+	if (!addVertexInputToPipeline(plDesc.stageInputDescriptor, pCreateInfo->pVertexInputState, shaderConfig)) {
+		[plDesc release];
+		return nil;
+	}
 	plDesc.stageInputDescriptor.indexBufferIndex = _stageResources[kMVKShaderStageVertex].implicitBuffers.ids[MVKImplicitBuffer::Index];
 
 	plDesc.threadGroupSizeIsMultipleOfThreadExecutionWidth = YES;
@@ -1317,10 +1334,12 @@ MTLComputePipelineDescriptor* MVKGraphicsPipeline::newMTLTessControlStageDescrip
 	std::string errorLog;
 	if (!_vertexModule->getShaderInterfaceVariables(spv::StorageClassOutput, spv::ExecutionModelVertex, pVertexSS->pName, pVertexSS->pSpecializationInfo, vtxOutputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get vertex outputs: %s", errorLog.c_str()));
+		[plDesc release];
 		return nil;
 	}
 	if (!_tessEvalModule->getShaderInterfaceVariables(spv::StorageClassInput, spv::ExecutionModelTessellationEvaluation, pTessEvalSS->pName, pTessEvalSS->pSpecializationInfo, teInputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get tessellation evaluation inputs: %s", errorLog.c_str()));
+		[plDesc release];
 		return nil;
 	}
 
@@ -1361,10 +1380,12 @@ MTLRenderPipelineDescriptor* MVKGraphicsPipeline::newMTLTessRasterStageDescripto
 	std::string errorLog;
 	if (!_tessCtlModule->getShaderInterfaceVariables(spv::StorageClassOutput, spv::ExecutionModelTessellationControl, pTessCtlSS->pName, pTessCtlSS->pSpecializationInfo, tcOutputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get tessellation control outputs: %s", errorLog.c_str()));
+		[plDesc release];
 		return nil;
 	}
 	if (!_tessEvalModule->getShaderInterfaceVariables(spv::StorageClassOutput, spv::ExecutionModelTessellationEvaluation, pTessEvalSS->pName, pTessEvalSS->pSpecializationInfo, teOutputs, errorLog) ) {
 		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Failed to get tessellation evaluation outputs: %s", errorLog.c_str()));
+		[plDesc release];
 		return nil;
 	}
 
